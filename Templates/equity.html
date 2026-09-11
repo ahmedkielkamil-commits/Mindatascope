@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindScope — Equity</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+    h3 { margin-top: 0; font-size: 16px; }
+    .note { color: #555; font-size: 14px; margin-bottom: 12px; }
+    .summary { margin: 12px 0; font-size: 15px; }
+    .summary.positive { color: #0f5132; font-weight: bold; }
+    .summary.warning { color: #984c0c; font-weight: bold; }
+    .insight-box {
+      background: #f8f9fa;
+      border-left: 4px solid #6c757d;
+      padding: 12px 16px;
+      margin: 16px 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .insight-box.positive { border-left-color: #198754; background: #d1e7dd; }
+    .insight-box.warning { border-left-color: #fd7e14; background: #ffe5d0; }
+    .explanation-box {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 16px;
+      margin: 16px 0;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .chart-box { max-width: 960px; margin-top: 16px; }
+    .split-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      margin-top: 16px;
+    }
+    .split-col { flex: 1; min-width: 320px; }
+    .stat-cards { display: flex; flex-direction: column; gap: 16px; }
+    .stat-card {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .stat-card .big {
+      font-size: 36px;
+      font-weight: bold;
+      color: #1a365d;
+      line-height: 1.2;
+    }
+    .stat-card .label { font-size: 14px; color: #555; margin-top: 6px; }
+    .mini-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .mini-stat {
+      flex: 1;
+      min-width: 120px;
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+    .mini-stat .num { font-size: 22px; font-weight: bold; }
+    .mini-stat .lbl { font-size: 12px; color: #666; margin-top: 4px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f5; cursor: pointer; user-select: none; }
+    .desert-severe_desert { background: #842029; color: #fff; font-weight: bold; }
+    .desert-significant_desert { background: #fd7e14; color: #fff; font-weight: bold; }
+    .desert-moderate_gap { background: #fff3cd; color: #856404; font-weight: bold; }
+    .desert-adequately_served { background: #d1e7dd; color: #0f5132; font-weight: bold; }
+    .desert-insufficient_data { background: #e2e3e5; color: #41464b; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  {% include 'partials/nav.html' %}
+  <h1>Equity Dashboard</h1>
+  <p class="note">Are we reaching the right kids and the right communities? Equity signals, geographic disparities, and the service desert index for policymakers.</p>
+
+  <h2>Care Plan Adoption by Socioeconomic Tier</h2>
+  <div class="chart-box"><canvas id="adoption-scatter"></canvas></div>
+  <div id="adoption-insight" class="insight-box"></div>
+  <p class="note">Socioeconomic data sourced from manually curated seed table. Replace with NCES data at <a href="https://nces.ed.gov/ccd/" target="_blank" rel="noopener">https://nces.ed.gov/ccd/</a> for production.</p>
+  <div id="adoption-error" class="error"></div>
+
+  <h2>Referral Follow-Through Rate by Zip Code</h2>
+  <div id="followthrough-summary" class="summary"></div>
+  <div class="chart-box"><canvas id="followthrough-chart"></canvas></div>
+  <div class="insight-box">Low follow-through in specific zip codes may indicate transportation barriers, insurance complexity, language access needs, or waitlist friction — not lack of family motivation.</div>
+  <div id="followthrough-error" class="error"></div>
+
+  <h2>Service Desert Index</h2>
+  <div id="desert-summary" class="summary"></div>
+  <table id="desert-table">
+    <thead>
+      <tr>
+        <th data-key="zip_code">Zip Code</th>
+        <th data-key="service_desert_index">Service Desert Index</th>
+        <th data-key="desert_tier">Desert Tier</th>
+        <th data-key="total_recommendations">Total Recommendations</th>
+        <th data-key="avg_recommended_per_search">Avg Facilities per Search</th>
+        <th data-key="followthrough_rate">Follow-Through Rate</th>
+        <th data-key="total_care_plans">Total Care Plans</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div class="explanation-box">
+    <strong>How the Service Desert Index is calculated:</strong><br>
+    • 40% weight: Therapy demand intensity (frequency and severity of recommendations)<br>
+    • 35% weight: Facility supply gap (how few recommended facilities were found per search)<br>
+    • 25% weight: Follow-through gap (how rarely families act on referrals in this area)<br>
+    A score of 1.0 = maximum desert conditions. A score of 0.0 = fully served community.
+  </div>
+  <p class="note">Geographic heat map with zip code polygon rendering coming in production.</p>
+  <div id="desert-error" class="error"></div>
+
+  <h2>Appointment Scheduling Rate</h2>
+  <div class="split-row">
+    <div class="split-col">
+      <h3>Overall Funnel</h3>
+      <div id="scheduling-stats" class="stat-cards"></div>
+    </div>
+    <div class="split-col">
+      <h3>By Zip Code</h3>
+      <div class="chart-box"><canvas id="scheduling-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="insight-box">The gap between referral contact and appointment scheduling is where families encounter insurance verification delays, provider waitlists, and transportation barriers. This metric identifies which zip codes need the most scheduling support infrastructure.</div>
+  <div id="scheduling-error" class="error"></div>
+
+  <script>
+    const tierColors = { low: '#dc3545', moderate: '#ffc107', high: '#198754' };
+    const followthroughColors = {
+      strong: '#198754', moderate: '#0d6efd', weak: '#fd7e14', critical: '#dc3545', no_data: '#adb5bd'
+    };
+
+    let adoptionChart = null;
+    let followthroughChart = null;
+    let schedulingChart = null;
+    let desertRows = [];
+    let desertSortKey = 'service_desert_index';
+    let desertSortAsc = false;
+
+    function fmtNum(v, digits = 2) {
+      if (v === null || v === undefined) return '—';
+      return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
+    }
+
+    function fmtPct(v) {
+      if (v === null || v === undefined) return '—';
+      return `${fmtNum(v, 1)}%`;
+    }
+
+    async function loadAdoptionChart() {
+      if (adoptionChart) adoptionChart.destroy();
+      const res = await fetch('/api/equity/socioeconomic-adoption');
+      const rows = await res.json();
+      const withIncome = rows.filter(r => r.median_household_income != null);
+      const maxStudents = Math.max(...withIncome.map(r => r.total_students || 0), 1);
+
+      adoptionChart = new Chart(document.getElementById('adoption-scatter'), {
+        type: 'scatter',
+        data: {
+          datasets: [{
+            label: 'Districts',
+            data: withIncome.map(r => ({
+              x: r.median_household_income,
+              y: r.care_plans_per_100_students ?? 0,
+              district: r
+            })),
+            backgroundColor: withIncome.map(r => tierColors[r.socioeconomic_tier] || '#666'),
+            pointRadius: withIncome.map(r => 6 + (r.total_students / maxStudents) * 14)
+          }]
+        },
+        options: {
+          plugins: {
+            title: { display: true, text: 'Care Plan Adoption Rate vs District Socioeconomic Status' },
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const d = ctx.raw.district;
+                  return [
+                    d.district,
+                    `Income: $${fmtNum(d.median_household_income, 0)}`,
+                    `Care plans/100 students: ${fmtNum(d.care_plans_per_100_students)}`,
+                    `Free/reduced lunch: ${fmtNum((d.free_reduced_lunch_rate ?? 0) * 100, 0)}%`,
+                    `Title I eligible: ${d.title_1_eligible ? 'Yes' : 'No'}`,
+                    `Signal: ${d.adoption_vs_need_signal}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Median Household Income' }, beginAtZero: false },
+            y: { title: { display: true, text: 'Care Plans per 100 Students' }, beginAtZero: true }
+          }
+        }
+      });
+
+      const rates = withIncome.map(r => r.care_plans_per_100_students ?? 0);
+      const avg = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+      const lowTier = withIncome.filter(r => r.socioeconomic_tier === 'low');
+      const aboveAvg = lowTier.filter(r => (r.care_plans_per_100_students ?? 0) > avg).length;
+      const box = document.getElementById('adoption-insight');
+      if (lowTier.length && aboveAvg > lowTier.length / 2) {
+        box.className = 'insight-box positive';
+        box.textContent = 'Low-income districts are adopting MindScope at above-average rates — equity goals being met';
+      } else {
+        box.className = 'insight-box warning';
+        box.textContent = 'Low-income districts are underrepresented in care plan generation — outreach and onboarding support may be needed';
+      }
+    }
+
+    async function loadFollowthroughChart() {
+      if (followthroughChart) followthroughChart.destroy();
+      const res = await fetch('/api/equity/followthrough-by-zip');
+      const rows = await res.json();
+      const critical = rows.filter(r => r.followthrough_tier === 'critical').length;
+      const strong = rows.filter(r => r.followthrough_tier === 'strong').length;
+      document.getElementById('followthrough-summary').textContent =
+        `${critical} zip code${critical === 1 ? '' : 's'} have critical follow-through rates (under 10%) | ${strong} zip code${strong === 1 ? '' : 's'} show strong follow-through (70%+)`;
+
+      const sorted = [...rows].sort((a, b) => (a.followthrough_rate ?? 0) - (b.followthrough_rate ?? 0));
+
+      followthroughChart = new Chart(document.getElementById('followthrough-chart'), {
+        type: 'bar',
+        data: {
+          labels: sorted.map(r => r.zip_code),
+          datasets: [{
+            label: 'Follow-through rate',
+            data: sorted.map(r => r.followthrough_rate ?? 0),
+            backgroundColor: sorted.map(r => followthroughColors[r.followthrough_tier] || '#666')
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          plugins: {
+            title: { display: true, text: 'Referral Follow-Through Rate by Zip Code' },
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const r = sorted[ctx.dataIndex];
+                  return [
+                    `Follow-through: ${fmtPct(r.followthrough_rate)}`,
+                    `Completion: ${fmtPct(r.completion_rate)}`,
+                    `Miss rate: ${fmtPct(r.miss_rate)}`,
+                    `Total referrals: ${r.total_referrals}`,
+                    `Care plans: ${r.total_care_plans}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: { min: 0, max: 100, title: { display: true, text: 'Follow-through Rate (%)' } }
+          }
+        }
+      });
+    }
+
+    function renderDesertTable() {
+      const rows = [...desertRows].sort((a, b) => {
+        const av = a[desertSortKey] ?? -Infinity;
+        const bv = b[desertSortKey] ?? -Infinity;
+        return desertSortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+      });
+      document.querySelector('#desert-table tbody').innerHTML = rows.length
+        ? rows.map(r => `
+          <tr>
+            <td>${r.zip_code}</td>
+            <td>${fmtNum(r.service_desert_index, 3)}</td>
+            <td class="desert-${r.desert_tier}">${r.desert_tier}</td>
+            <td>${r.total_recommendations}</td>
+            <td>${fmtNum(r.avg_recommended_per_search)}</td>
+            <td>${fmtPct(r.followthrough_rate)}</td>
+            <td>${r.total_care_plans}</td>
+          </tr>
+        `).join('')
+        : '<tr><td colspan="7">No service desert data available.</td></tr>';
+    }
+
+    function initDesertTableSort() {
+      document.querySelectorAll('#desert-table th').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.key;
+          if (desertSortKey === key) desertSortAsc = !desertSortAsc;
+          else { desertSortKey = key; desertSortAsc = false; }
+          renderDesertTable();
+        });
+      });
+    }
+
+    async function loadDesertTable() {
+      const res = await fetch('/api/equity/service-desert-index');
+      desertRows = await res.json();
+      const deserts = desertRows.filter(r =>
+        r.desert_tier === 'severe_desert' || r.desert_tier === 'significant_desert'
+      ).length;
+      document.getElementById('desert-summary').textContent =
+        `${deserts} zip code${deserts === 1 ? '' : 's'} classified as severe or significant service deserts`;
+      renderDesertTable();
+    }
+
+    async function loadSchedulingSection() {
+      if (schedulingChart) schedulingChart.destroy();
+      const res = await fetch('/api/equity/appointment-scheduling');
+      const rows = await res.json();
+      const overall = rows.find(r => r.grouping_type === 'overall');
+      const byZip = rows.filter(r => r.grouping_type === 'by_zip');
+
+      if (overall) {
+        document.getElementById('scheduling-stats').innerHTML = `
+          <div class="stat-card">
+            <div class="big">${fmtPct(overall.scheduling_rate)}</div>
+            <div class="label">of families who contact a referral successfully schedule an appointment</div>
+          </div>
+          <div class="stat-card">
+            <div class="big">${overall.scheduling_gap_count ?? 0}</div>
+            <div class="label">families fell through the gap between referral contact and appointment</div>
+          </div>
+          <div class="mini-stats">
+            <div class="mini-stat">
+              <div class="num">${overall.gap_families_with_pending_appointment ?? 0}</div>
+              <div class="lbl">Scheduling in progress</div>
+            </div>
+            <div class="mini-stat">
+              <div class="num">${overall.gap_families_with_cancelled_appointment ?? 0}</div>
+              <div class="lbl">Appointment cancelled</div>
+            </div>
+            <div class="mini-stat">
+              <div class="num">${overall.gap_families_with_no_appointment_at_all ?? 0}</div>
+              <div class="lbl">Never attempted to schedule</div>
+            </div>
+          </div>
+        `;
+      }
+
+      const sorted = [...byZip].sort((a, b) => (a.scheduling_rate ?? 0) - (b.scheduling_rate ?? 0));
+      schedulingChart = new Chart(document.getElementById('scheduling-chart'), {
+        type: 'bar',
+        data: {
+          labels: sorted.map(r => r.zip_code),
+          datasets: [{
+            label: 'Scheduling rate',
+            data: sorted.map(r => r.scheduling_rate ?? 0),
+            backgroundColor: sorted.map(r =>
+              (r.scheduling_rate ?? 0) >= 70 ? '#198754'
+                : (r.scheduling_rate ?? 0) >= 40 ? '#ffc107' : '#dc3545'
+            )
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          plugins: {
+            title: { display: true, text: 'Appointment Scheduling Rate by Zip Code' },
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const r = sorted[ctx.dataIndex];
+                  return [
+                    `Scheduling rate: ${fmtPct(r.scheduling_rate)}`,
+                    `Gap count: ${r.scheduling_gap_count}`,
+                    `Avg days to appointment: ${fmtNum(r.avg_days_referral_to_appointment, 0)}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: { min: 0, max: 100, title: { display: true, text: 'Scheduling Rate (%)' } }
+          }
+        }
+      });
+    }
+
+    initDesertTableSort();
+    Promise.all([
+      loadAdoptionChart(),
+      loadFollowthroughChart(),
+      loadDesertTable(),
+      loadSchedulingSection()
+    ]).catch(err => {
+      const msg = `Failed to load dashboard data: ${err}`;
+      ['adoption-error', 'followthrough-error', 'desert-error', 'scheduling-error']
+        .forEach(id => { document.getElementById(id).textContent = msg; });
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

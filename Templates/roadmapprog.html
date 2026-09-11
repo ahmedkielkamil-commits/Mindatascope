@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindScope — Roadmap Progression</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+    .note { color: #555; font-size: 14px; margin-bottom: 12px; }
+    .filter-row { margin: 16px 0; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+    label { font-weight: bold; margin-right: 8px; }
+    select { min-width: 180px; padding: 6px 8px; }
+    .summary { margin: 12px 0; font-size: 15px; }
+    .summary.positive { color: #0f5132; }
+    .summary.warning { color: #984c0c; }
+    .summary.neutral { color: #333; }
+    .chart-box { max-width: 960px; margin-top: 16px; }
+    .error { color: #b00020; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f5; }
+    .tier-very_hard { background: #f8d7da; color: #842029; font-weight: bold; }
+    .tier-hard { background: #ffe5d0; color: #984c0c; font-weight: bold; }
+    .tier-moderate { background: #fff3cd; color: #856404; font-weight: bold; }
+    .tier-achievable { background: #d1e7dd; color: #0f5132; font-weight: bold; }
+    .alert-box { padding: 12px 16px; border-radius: 4px; margin-top: 12px; max-width: 960px; }
+    .alert-warning { background: #fff3cd; border: 1px solid #ffc107; color: #664d03; }
+    .alert-success { background: #d1e7dd; border: 1px solid #198754; color: #0f5132; }
+  </style>
+</head>
+<body>
+  {% include 'partials/nav.html' %}
+  <h1>Roadmap Progression Dashboard</h1>
+  <p class="note">Are children actually progressing through their care plans? Track stage completion, behavioral milestones, timing, and parent disengagement.</p>
+
+  <div class="filter-row">
+    <div>
+      <label for="stage-filter">Stage</label>
+      <select id="stage-filter">
+        <option value="">All Stages</option>
+        <option value="1">Stage 1</option>
+        <option value="2">Stage 2</option>
+        <option value="3">Stage 3</option>
+        <option value="4">Stage 4</option>
+        <option value="5">Stage 5</option>
+        <option value="6">Stage 6</option>
+      </select>
+    </div>
+    <div>
+      <label for="difficulty-filter">Difficulty</label>
+      <select id="difficulty-filter">
+        <option value="">All Difficulties</option>
+        <option value="very_hard">Very Hard</option>
+        <option value="hard">Hard</option>
+        <option value="moderate">Moderate</option>
+        <option value="achievable">Achievable</option>
+      </select>
+    </div>
+  </div>
+  <p class="note">Filters apply to the behavioral markers table only.</p>
+
+  <h2>Stage Completion Distribution</h2>
+  <div class="chart-box"><canvas id="stage-chart"></canvas></div>
+  <div id="stage-summary" class="summary"></div>
+  <div id="stage-error" class="error"></div>
+
+  <h2>Behavioral Marker Difficulty</h2>
+  <div id="marker-summary" class="summary"></div>
+  <div id="marker-error" class="error"></div>
+  <table id="marker-table">
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Stage</th>
+        <th>Met Rate</th>
+        <th>Difficulty Tier</th>
+        <th>Times Appeared</th>
+        <th>Times Met</th>
+        <th>Avg Days to Met</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Average Time Per Stage</h2>
+  <div class="chart-box"><canvas id="time-chart"></canvas></div>
+  <p class="note">Time calculated from prior stage completion to current stage completion. Stages with no completed roadmaps show no bar.</p>
+  <div id="time-error" class="error"></div>
+
+  <h2>Parent Task Completion by Stage</h2>
+  <div class="chart-box"><canvas id="task-chart"></canvas></div>
+  <div id="task-alert"></div>
+  <div id="task-error" class="error"></div>
+
+  <script>
+    const tierClass = {
+      very_hard: 'tier-very_hard',
+      hard: 'tier-hard',
+      moderate: 'tier-moderate',
+      achievable: 'tier-achievable'
+    };
+    const tierLabels = {
+      very_hard: 'Very Hard',
+      hard: 'Hard',
+      moderate: 'Moderate',
+      achievable: 'Achievable'
+    };
+
+    let stageChart = null;
+    let timeChart = null;
+    let taskChart = null;
+    let allMarkers = [];
+
+    function fmtNum(v, d = 0) {
+      if (v === null || v === undefined) return '—';
+      return Number(v).toLocaleString(undefined, { maximumFractionDigits: d });
+    }
+    function fmtPct(v) {
+      if (v === null || v === undefined) return '—';
+      return `${fmtNum(v, 1)}%`;
+    }
+    function isTrue(v) {
+      return v === true || v === 1 || v === '1';
+    }
+
+    function renderStageChart(rows) {
+      const labels = rows.map(r => r.stage_label);
+      const ctx = document.getElementById('stage-chart');
+      if (stageChart) stageChart.destroy();
+      stageChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Students at stage',
+              data: rows.map(r => r.students_highest_stage_here),
+              backgroundColor: '#1a365d'
+            },
+            {
+              label: 'Stalled at stage',
+              data: rows.map(r => r.students_stalled_here),
+              backgroundColor: '#90cdf4'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'Student Distribution Across Roadmap Stages' },
+            tooltip: {
+              callbacks: {
+                afterBody(items) {
+                  const row = rows[items[0].dataIndex];
+                  return [
+                    `Completed this stage: ${fmtNum(row.students_completed_this_stage)}`,
+                    `Completion rate: ${fmtPct(row.completion_rate_this_stage)}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: 'Student count' } }
+          }
+        }
+      });
+
+      const early = (rows.find(r => r.stage_number === 1)?.students_highest_stage_here || 0)
+        + (rows.find(r => r.stage_number === 2)?.students_highest_stage_here || 0);
+      const late = (rows.find(r => r.stage_number === 5)?.students_highest_stage_here || 0)
+        + (rows.find(r => r.stage_number === 6)?.students_highest_stage_here || 0);
+      const total = rows.reduce((s, r) => s + r.students_highest_stage_here, 0);
+      const el = document.getElementById('stage-summary');
+      if (total === 0) {
+        el.textContent = '';
+        return;
+      }
+      if (late >= early && late > 0) {
+        el.textContent = 'Most students are reaching advanced stages — strong sustained engagement';
+        el.className = 'summary positive';
+      } else if (early >= late && early > 0) {
+        el.textContent = 'Most students are stalling in early stages — early intervention support may be needed';
+        el.className = 'summary warning';
+      } else {
+        el.textContent = 'Students are distributed across stages — normal progression pattern';
+        el.className = 'summary neutral';
+      }
+    }
+
+    function renderMarkerTable(rows) {
+      allMarkers = rows;
+      const hardCount = rows.filter(r => (r.met_rate ?? 100) < 50).length;
+      document.getElementById('marker-summary').textContent =
+        `${hardCount} of ${rows.length} behavioral markers have a met rate below 50% — these represent the hardest milestones for families`;
+
+      const tbody = document.querySelector('#marker-table tbody');
+      tbody.innerHTML = rows.map(row => `
+        <tr>
+          <td>${row.description}</td>
+          <td>${row.stage_label}</td>
+          <td>${fmtPct(row.met_rate)}</td>
+          <td class="${tierClass[row.difficulty_tier] || ''}">${tierLabels[row.difficulty_tier] || row.difficulty_tier}</td>
+          <td>${fmtNum(row.total_count)}</td>
+          <td>${fmtNum(row.met_count)}</td>
+          <td>${fmtNum(row.avg_days_to_met, 1)}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderTimeChart(rows) {
+      const labels = rows.map(r => r.stage_label);
+      const ctx = document.getElementById('time-chart');
+      if (timeChart) timeChart.destroy();
+      timeChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Avg days in stage',
+            data: rows.map(r => r.avg_days_in_stage),
+            backgroundColor: rows.map(r =>
+              isTrue(r.stages_significantly_longer) ? '#dc3545' : '#0d6efd'
+            )
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'Average Time Students Spend Per Roadmap Stage' },
+            tooltip: {
+              callbacks: {
+                label(ctx) {
+                  const row = rows[ctx.dataIndex];
+                  if (row.avg_days_in_stage == null) return 'No completed roadmaps yet';
+                  const lines = [
+                    `Avg: ${fmtNum(row.avg_days_in_stage, 1)} days`,
+                    `Median: ${fmtNum(row.median_days_in_stage, 1)} days`,
+                    `Fastest: ${fmtNum(row.fastest_completion_days)} days`,
+                    `Slowest: ${fmtNum(row.slowest_completion_days)} days`
+                  ];
+                  if (isTrue(row.stages_significantly_longer)) {
+                    lines.push('⚠ This stage takes significantly longer than average');
+                  }
+                  return lines;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: 'Days' }
+            }
+          }
+        }
+      });
+    }
+
+    function renderTaskChart(rows) {
+      const labels = rows.map(r => r.stage_label);
+      const ctx = document.getElementById('task-chart');
+      if (taskChart) taskChart.destroy();
+      taskChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Completed',
+              data: rows.map(r => r.completion_rate_of_visible || 0),
+              backgroundColor: '#198754'
+            },
+            {
+              label: 'In Progress',
+              data: rows.map(r => r.in_progress_rate_of_visible || 0),
+              backgroundColor: '#0d6efd'
+            },
+            {
+              label: 'Pending',
+              data: rows.map(r => r.pending_rate_of_visible || 0),
+              backgroundColor: '#adb5bd'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'Parent Task Completion Rate by Stage (Visible Tasks Only)' },
+            tooltip: {
+              callbacks: {
+                afterBody(items) {
+                  const row = rows[items[0].dataIndex];
+                  const lines = [
+                    `Completion (visible): ${fmtPct(row.completion_rate_of_visible)}`,
+                    `Prior stage completion: ${fmtPct(row.prior_stage_completion_rate)}`
+                  ];
+                  if (isTrue(row.disengagement_signal)) {
+                    lines.push(`⚠ Disengagement detected — completion dropped ${fmtNum(row.disengagement_magnitude, 1)} points from prior stage`);
+                  }
+                  return lines;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true },
+            y: { stacked: true, max: 100, title: { display: true, text: 'Percentage' } }
+          }
+        }
+      });
+
+      const disengaged = rows.filter(r => isTrue(r.disengagement_signal));
+      const alertEl = document.getElementById('task-alert');
+      if (disengaged.length) {
+        const msg = disengaged.map(r =>
+          `Stage ${r.stage_number} (completion dropped ${fmtNum(r.disengagement_magnitude, 1)} points from Stage ${r.stage_number - 1})`
+        ).join(' and ');
+        alertEl.className = 'alert-box alert-warning';
+        alertEl.textContent = `Disengagement detected at ${msg}`;
+      } else {
+        alertEl.className = 'alert-box alert-success';
+        alertEl.textContent = 'No significant disengagement detected across stages';
+      }
+    }
+
+    async function loadStageDistribution() {
+      const res = await fetch('/api/roadmap-progression/stage-distribution');
+      if (!res.ok) throw new Error(`Stage distribution failed (${res.status})`);
+      renderStageChart(await res.json());
+    }
+
+    async function loadBehavioralMarkers() {
+      const stage = document.getElementById('stage-filter').value;
+      const difficulty = document.getElementById('difficulty-filter').value;
+      const params = new URLSearchParams({ limit: '20' });
+      if (stage) params.set('stage', stage);
+      if (difficulty) params.set('difficulty', difficulty);
+      const res = await fetch(`/api/roadmap-progression/behavioral-markers?${params}`);
+      if (!res.ok) throw new Error(`Behavioral markers failed (${res.status})`);
+      renderMarkerTable(await res.json());
+    }
+
+    async function loadTimePerStage() {
+      const res = await fetch('/api/roadmap-progression/time-per-stage');
+      if (!res.ok) throw new Error(`Time per stage failed (${res.status})`);
+      renderTimeChart(await res.json());
+    }
+
+    async function loadTaskCompletion() {
+      const res = await fetch('/api/roadmap-progression/task-completion-by-stage');
+      if (!res.ok) throw new Error(`Task completion failed (${res.status})`);
+      renderTaskChart(await res.json());
+    }
+
+    document.getElementById('stage-filter').addEventListener('change', () => {
+      loadBehavioralMarkers().catch(err => {
+        document.getElementById('marker-error').textContent = err.message;
+      });
+    });
+    document.getElementById('difficulty-filter').addEventListener('change', () => {
+      loadBehavioralMarkers().catch(err => {
+        document.getElementById('marker-error').textContent = err.message;
+      });
+    });
+
+    (async () => {
+      try {
+        await Promise.all([
+          loadStageDistribution(),
+          loadBehavioralMarkers(),
+          loadTimePerStage(),
+          loadTaskCompletion()
+        ]);
+      } catch (err) {
+        document.getElementById('stage-error').textContent = err.message;
+      }
+    })();
+  </script>
+</body>
+</html>

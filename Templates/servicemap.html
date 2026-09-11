@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindScope — Service Mapping</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+    .note { color: #555; font-size: 14px; margin-bottom: 12px; }
+    .filter-row { margin: 16px 0; }
+    .filter-row input[type="text"] { padding: 6px 8px; width: 120px; }
+    .filter-row button { padding: 6px 14px; cursor: pointer; }
+    label { font-weight: bold; margin-right: 8px; }
+    select { min-width: 360px; padding: 6px 8px; }
+    .summary { margin: 12px 0; font-size: 15px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f5; cursor: pointer; }
+    .gap-critical { background: #f8d7da; color: #842029; font-weight: bold; }
+    .gap-high { background: #ffe5d0; color: #984c0c; font-weight: bold; }
+    .gap-moderate { background: #fff3cd; color: #856404; font-weight: bold; }
+    .gap-covered { background: #d1e7dd; color: #0f5132; font-weight: bold; }
+    .gap-no_demand { background: #e2e3e5; color: #41464b; }
+    .tier-recommended { background: #d1e7dd; color: #0f5132; font-weight: bold; }
+    .tier-possible { background: #fff3cd; color: #856404; }
+    .tier-excluded { background: #e2e3e5; color: #41464b; }
+    .chart-box { max-width: 960px; margin-top: 16px; }
+    .error { color: #b00020; }
+    #facility-map {
+      width: 100%;
+      max-width: 960px;
+      height: 480px;
+      margin-top: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #f5f5f5;
+    }
+    #facility-map.empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #666;
+      font-size: 14px;
+      padding: 24px;
+      text-align: center;
+    }
+    .map-legend {
+      display: flex;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #555;
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+  </style>
+  {% if google_maps_api_key %}
+  <script async defer src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&loading=async"></script>
+  {% endif %}
+</head>
+<body>
+  {% include 'partials/nav.html' %}
+  <h1>Service Mapping Dashboard</h1>
+  <p class="note">Does the community have what it needs? Compare therapy demand against facility supply by geography.</p>
+
+  <div class="filter-row">
+    <label for="zip-search">Zip code</label>
+    <input id="zip-search" type="text" maxlength="10" placeholder="62704">
+    <label for="therapy-select">Therapy type</label>
+    <select id="therapy-select">
+      <option value="">All therapy types</option>
+    </select>
+    <button id="search-btn" type="button">Search</button>
+  </div>
+  <p class="note">Uses live Google Places when an API key is configured in <code>.env</code>; otherwise falls back to MindScope care-plan search history. Search updates the provider map, demand vs. supply table, and charts below.</p>
+
+  <h2>Therapy Providers in Area</h2>
+  <div id="facility-summary" class="summary"></div>
+  <div id="facility-error" class="error"></div>
+  <div id="demand-error" class="error"></div>
+  <div id="facility-map" class="empty">Search a zip code to view providers on the map.</div>
+  <div class="map-legend">
+    <span><span class="legend-dot" style="background:#198754"></span>Recommended</span>
+    <span><span class="legend-dot" style="background:#ffc107"></span>Possible</span>
+    <span><span class="legend-dot" style="background:#adb5bd"></span>Excluded / live</span>
+  </div>
+  <table id="facility-table">
+    <thead>
+      <tr>
+        <th>Therapy Type</th>
+        <th>Facility</th>
+        <th>Address</th>
+        <th>Source</th>
+        <th>Tier</th>
+        <th>Score</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Demand vs Supply</h2>
+  <div id="summary-line" class="summary"></div>
+  <table id="demand-table">
+    <thead>
+      <tr>
+        <th data-key="zip_code">Zip Code</th>
+        <th data-key="therapy_type">Therapy Type</th>
+        <th data-key="times_recommended">Times Recommended</th>
+        <th data-key="facilities_found_recommended">Recommended Facilities Found</th>
+        <th data-key="supply_coverage_rate">Supply Coverage Rate</th>
+        <th data-key="gap_severity">Gap Severity</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Gap Severity Distribution</h2>
+  <div class="chart-box"><canvas id="gap-chart"></canvas></div>
+
+  <h2>Most Common Therapy Types</h2>
+  <div class="chart-box"><canvas id="therapy-chart"></canvas></div>
+
+  <script>
+    const gapClass = {
+      critical: 'gap-critical',
+      high: 'gap-high',
+      moderate: 'gap-moderate',
+      covered: 'gap-covered',
+      no_demand: 'gap-no_demand'
+    };
+
+    const tierClass = {
+      recommended: 'tier-recommended',
+      possible: 'tier-possible',
+      excluded: 'tier-excluded'
+    };
+
+    const markerColors = {
+      recommended: '#198754',
+      possible: '#ffc107',
+      excluded: '#adb5bd'
+    };
+
+    const hasMapsKey = {{ 'true' if google_maps_api_key else 'false' }};
+
+    const gapColors = {
+      critical: '#dc3545',
+      high: '#fd7e14',
+      moderate: '#ffc107',
+      covered: '#198754',
+      no_demand: '#adb5bd'
+    };
+
+    const severityOrder = { critical: 0, high: 1, moderate: 2, covered: 3, no_demand: 4 };
+    const therapyHues = ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6', '#dd4477', '#66aa00'];
+
+    let demandRows = [];
+    let gapChart = null;
+    let therapyChart = null;
+    let facilityMap = null;
+    let facilityMarkers = [];
+    let activeInfoWindow = null;
+    let sortKey = 'gap_severity';
+    let sortAsc = true;
+
+    function fmtNum(value, digits = 2) {
+      if (value === null || value === undefined) return '—';
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
+    }
+
+    function fmtPct(value) {
+      if (value === null || value === undefined) return '—';
+      return `${fmtNum(value, 1)}%`;
+    }
+
+    function sortRows(rows) {
+      return [...rows].sort((a, b) => {
+        let av = a[sortKey];
+        let bv = b[sortKey];
+        if (sortKey === 'gap_severity') {
+          av = severityOrder[av] ?? 99;
+          bv = severityOrder[bv] ?? 99;
+        } else if (typeof av === 'string') {
+          av = av.toLowerCase();
+          bv = (bv || '').toLowerCase();
+        }
+        if (av < bv) return sortAsc ? -1 : 1;
+        if (av > bv) return sortAsc ? 1 : -1;
+        if (sortKey === 'gap_severity') {
+          return (b.times_recommended || 0) - (a.times_recommended || 0);
+        }
+        return 0;
+      });
+    }
+
+    function renderSummary(rows) {
+      const critical = rows.filter(r => r.gap_severity === 'critical').length;
+      const high = rows.filter(r => r.gap_severity === 'high').length;
+      const covered = rows.filter(r => r.gap_severity === 'covered').length;
+      document.getElementById('summary-line').textContent =
+        `${critical} zip codes have critical gaps | ${high} zip codes have high gaps | ${covered} zip codes are covered`;
+    }
+
+    function renderTable(rows) {
+      const sorted = sortRows(rows);
+      const tbody = document.querySelector('#demand-table tbody');
+      tbody.innerHTML = sorted.map(row => `
+        <tr>
+          <td>${row.zip_code}</td>
+          <td>${row.therapy_type}</td>
+          <td>${fmtNum(row.times_recommended, 0)}</td>
+          <td>${fmtNum(row.facilities_found_recommended, 0)}</td>
+          <td>${row.supply_coverage_rate === null ? '—' : fmtNum(row.supply_coverage_rate)}</td>
+          <td class="${gapClass[row.gap_severity] || ''}">${row.gap_severity || '—'}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderGapChart(rows, zip, therapyType) {
+      const tiers = ['critical', 'high', 'moderate', 'covered', 'no_demand'];
+      const counts = tiers.map(t => rows.filter(r => r.gap_severity === t).length);
+      const ctx = document.getElementById('gap-chart');
+      if (gapChart) gapChart.destroy();
+      let title = 'Service Gap Distribution';
+      if (zip && therapyType) title += ` — ${zip}, ${therapyType}`;
+      else if (zip) title += ` — ${zip}`;
+      else if (therapyType) title += ` — ${therapyType}`;
+      gapChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: tiers,
+          datasets: [{
+            label: 'Zip + therapy combinations',
+            data: counts,
+            backgroundColor: tiers.map(t => gapColors[t])
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          plugins: {
+            title: { display: true, text: title },
+            legend: { display: false }
+          },
+          scales: {
+            x: { beginAtZero: true, title: { display: true, text: 'Count' } }
+          }
+        }
+      });
+    }
+
+    function buildDemandUrl(zip, therapyType) {
+      const params = new URLSearchParams();
+      if (zip) params.set('zip_code', zip);
+      if (therapyType) params.set('therapy_type', therapyType);
+      const qs = params.toString();
+      return qs ? `/api/service-mapping/demand-vs-supply?${qs}` : '/api/service-mapping/demand-vs-supply';
+    }
+
+    async function loadDemandVsSupply(zip, therapyType) {
+      const res = await fetch(buildDemandUrl(zip, therapyType));
+      if (!res.ok) throw new Error(`Demand vs supply failed (${res.status})`);
+      demandRows = await res.json();
+      renderSummary(demandRows);
+      renderTable(demandRows);
+      renderGapChart(demandRows, zip, therapyType);
+      return demandRows;
+    }
+
+    async function loadTherapyTypes() {
+      const res = await fetch('/api/service-mapping/therapy-types');
+      const types = await res.json();
+      const select = document.getElementById('therapy-select');
+      types.forEach(type => {
+        const opt = document.createElement('option');
+        opt.value = type;
+        opt.textContent = type;
+        select.appendChild(opt);
+      });
+    }
+
+    async function waitForGoogleMaps() {
+      if (!hasMapsKey) return false;
+      const start = Date.now();
+      while (!window.google?.maps) {
+        if (Date.now() - start > 10000) return false;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return true;
+    }
+
+    function destroyFacilityMap(message) {
+      facilityMarkers.forEach(marker => marker.setMap(null));
+      facilityMarkers = [];
+      if (activeInfoWindow) {
+        activeInfoWindow.close();
+        activeInfoWindow = null;
+      }
+      facilityMap = null;
+
+      const oldEl = document.getElementById('facility-map');
+      if (!oldEl?.parentNode) return null;
+
+      const mapEl = document.createElement('div');
+      mapEl.id = 'facility-map';
+      if (message) {
+        mapEl.className = 'empty';
+        mapEl.textContent = message;
+      }
+      oldEl.parentNode.replaceChild(mapEl, oldEl);
+      return mapEl;
+    }
+
+    async function renderFacilityMap(payload) {
+      const facilities = (payload.facilities || []).filter(
+        f => f.lat != null && f.lng != null
+      );
+
+      if (!hasMapsKey) {
+        destroyFacilityMap('Add GOOGLE_PLACES_API_KEY to .env to enable the map view.');
+        return;
+      }
+
+      const mapsReady = await waitForGoogleMaps();
+      if (!mapsReady) {
+        destroyFacilityMap('Google Maps failed to load. Check your API key and enabled APIs.');
+        return;
+      }
+
+      if (!facilities.length) {
+        destroyFacilityMap(`No mappable providers found for zip ${payload.zip_code}.`);
+        return;
+      }
+
+      const mapEl = destroyFacilityMap();
+      const center = payload.center || {
+        lat: facilities.reduce((sum, f) => sum + f.lat, 0) / facilities.length,
+        lng: facilities.reduce((sum, f) => sum + f.lng, 0) / facilities.length
+      };
+
+      facilityMap = new google.maps.Map(mapEl, {
+        center,
+        zoom: 12,
+        mapTypeControl: true,
+        streetViewControl: false,
+        fullscreenControl: true
+      });
+
+      const bounds = new google.maps.LatLngBounds();
+      facilities.forEach(facility => {
+        const position = { lat: facility.lat, lng: facility.lng };
+        bounds.extend(position);
+
+        const marker = new google.maps.Marker({
+          position,
+          map: facilityMap,
+          title: facility.facility_name,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 9,
+            fillColor: markerColors[facility.tier] || '#3366cc',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+          }
+        });
+
+        const infoWindow = new google.maps.InfoWindow({
+          content: `
+            <div style="max-width:220px">
+              <strong>${facility.facility_name}</strong><br>
+              ${facility.therapy_type}<br>
+              ${facility.facility_address || ''}
+            </div>
+          `
+        });
+
+        marker.addListener('mouseover', () => {
+          if (activeInfoWindow) activeInfoWindow.close();
+          activeInfoWindow = infoWindow;
+          infoWindow.open({ map: facilityMap, anchor: marker });
+        });
+
+        marker.addListener('mouseout', () => infoWindow.close());
+        marker.addListener('click', () => {
+          if (activeInfoWindow) activeInfoWindow.close();
+          activeInfoWindow = infoWindow;
+          infoWindow.open({ map: facilityMap, anchor: marker });
+          facilityMap.panTo(position);
+        });
+
+        facilityMarkers.push(marker);
+      });
+
+      facilityMap.fitBounds(bounds);
+      if (facilities.length === 1) facilityMap.setZoom(14);
+    }
+
+    function renderFacilityResults(payload) {
+      const tbody = document.querySelector('#facility-table tbody');
+      const summary = document.getElementById('facility-summary');
+      const facilities = payload.facilities || [];
+
+      if (!facilities.length) {
+        summary.textContent = `No therapy providers found for zip ${payload.zip_code}.`;
+        tbody.innerHTML = '';
+        destroyFacilityMap(`No therapy providers found for zip ${payload.zip_code}.`);
+        return;
+      }
+
+      const sourceLabel = {
+        stored: 'MindScope search history',
+        google_places: 'Google Places (live)',
+        none: 'none'
+      };
+      summary.textContent =
+        `${facilities.length} provider${facilities.length === 1 ? '' : 's'} found in ${payload.zip_code} — source: ${sourceLabel[payload.source] || payload.source}. Hover or click map markers for names.`;
+
+      tbody.innerHTML = facilities.map(row => `
+        <tr>
+          <td>${row.therapy_type}</td>
+          <td>${row.facility_name}</td>
+          <td>${row.facility_address || '—'}</td>
+          <td>${row.source}</td>
+          <td class="${tierClass[row.tier] || ''}">${row.tier || '—'}</td>
+          <td>${row.total_score === null || row.total_score === undefined ? '—' : fmtNum(row.total_score, 0)}</td>
+        </tr>
+      `).join('');
+
+      renderFacilityMap(payload);
+    }
+
+    async function searchFacilities(zip, therapyType) {
+      const params = new URLSearchParams({ zip_code: zip });
+      if (therapyType) params.set('therapy_type', therapyType);
+      const res = await fetch(`/api/service-mapping/facilities?${params}`);
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || `Facility search failed (${res.status})`);
+      renderFacilityResults(payload);
+    }
+
+    function renderTherapyChart(rows, zip, therapyType) {
+      const labels = rows.map(r => r.therapy_type);
+      const ctx = document.getElementById('therapy-chart');
+      if (therapyChart) therapyChart.destroy();
+      let title = 'Therapy Type Demand';
+      if (zip && therapyType) title += ` — ${zip}, ${therapyType}`;
+      else if (zip) title += ` — ${zip}`;
+      else if (therapyType) title += ` — ${therapyType}`;
+      therapyChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Unmet gaps',
+              data: rows.map(r => r.total_gaps),
+              backgroundColor: rows.map((_, i) => therapyHues[i % therapyHues.length])
+            },
+            {
+              label: 'Already receiving',
+              data: rows.map(r => r.total_already_receiving),
+              backgroundColor: rows.map((_, i) => therapyHues[i % therapyHues.length] + '55')
+            }
+          ]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          plugins: {
+            title: { display: true, text: title },
+            tooltip: {
+              callbacks: {
+                afterBody(items) {
+                  const row = rows[items[0].dataIndex];
+                  return [
+                    `Total recommendations: ${row.total_recommendations}`,
+                    `Gap rate: ${fmtPct(row.gap_rate)}`,
+                    `Zip codes affected: ${row.zip_codes_affected}`,
+                    `Most common zip: ${row.most_common_zip}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true, beginAtZero: true, title: { display: true, text: 'Total recommendations' } },
+            y: { stacked: true }
+          }
+        }
+      });
+    }
+
+    async function loadTherapySummary(zip, therapyType, demandRowsForZip) {
+      const res = await fetch('/api/service-mapping/therapy-summary');
+      if (!res.ok) throw new Error(`Therapy summary failed (${res.status})`);
+      let rows = await res.json();
+      if (therapyType) rows = rows.filter(r => r.therapy_type === therapyType);
+      if (zip && demandRowsForZip) {
+        const typesInZip = new Set(demandRowsForZip.map(r => r.therapy_type));
+        rows = rows.filter(r => typesInZip.has(r.therapy_type));
+      }
+      renderTherapyChart(rows, zip, therapyType);
+    }
+
+    async function runSearch() {
+      const zip = document.getElementById('zip-search').value.trim();
+      const therapyType = document.getElementById('therapy-select').value;
+      const facilityError = document.getElementById('facility-error');
+      const demandError = document.getElementById('demand-error');
+      facilityError.textContent = '';
+      demandError.textContent = '';
+
+      if (!zip) {
+        facilityError.textContent = 'Enter a zip code to search.';
+        return;
+      }
+
+      try {
+        const demand = await loadDemandVsSupply(zip, therapyType);
+        await Promise.all([
+          searchFacilities(zip, therapyType),
+          loadTherapySummary(zip, therapyType, demand)
+        ]);
+      } catch (err) {
+        demandError.textContent = err.message;
+      }
+    }
+
+    document.getElementById('search-btn').addEventListener('click', runSearch);
+    document.getElementById('zip-search').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runSearch();
+    });
+    document.getElementById('therapy-select').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runSearch();
+    });
+
+    document.querySelectorAll('#demand-table th').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.key;
+        if (sortKey === key) sortAsc = !sortAsc;
+        else { sortKey = key; sortAsc = key !== 'gap_severity'; }
+        renderTable(demandRows);
+      });
+    });
+
+    (async () => {
+      try {
+        await loadTherapyTypes();
+      } catch (err) {
+        document.getElementById('demand-error').textContent = err.message;
+      }
+    })();
+  </script>
+</body>
+</html>

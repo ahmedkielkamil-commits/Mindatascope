@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindScope — Counselor Density</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+    .note { color: #555; font-size: 14px; margin-bottom: 12px; }
+    .filter-row { margin: 16px 0; }
+    .filter-row label { font-weight: bold; margin-right: 8px; }
+    .filter-row select { min-width: 160px; padding: 6px 8px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+    th { background: #f5f5f5; cursor: pointer; }
+    .tier-critical { background: #f8d7da; color: #842029; font-weight: bold; }
+    .tier-high { background: #ffe5d0; color: #984c0c; font-weight: bold; }
+    .tier-moderate { background: #fff3cd; color: #856404; font-weight: bold; }
+    .tier-low { background: #d1e7dd; color: #0f5132; font-weight: bold; }
+    .tier-no_data { background: #e2e3e5; color: #41464b; }
+    .chart-box { max-width: 960px; margin-top: 16px; }
+    .error { color: #b00020; }
+    #school-ratio-map {
+      width: 100%;
+      max-width: 960px;
+      height: 480px;
+      margin-top: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #f5f5f5;
+    }
+    #school-ratio-map.empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #666;
+      font-size: 14px;
+      padding: 24px;
+      text-align: center;
+    }
+    .map-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: 13px;
+      color: #555;
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+  </style>
+  {% if google_maps_api_key %}
+  <script async defer src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&loading=async"></script>
+  {% endif %}
+</head>
+<body>
+  {% include 'partials/nav.html' %}
+  <h1>Counselor Density Dashboard</h1>
+  <p class="note">School-level staffing ratios, submission trends, and caseload vs. activity.</p>
+
+  <div class="filter-row">
+    <label for="zip-filter">Zip code</label>
+    <select id="zip-filter"></select>
+  </div>
+  <p class="note">Filter by school campus zip code. Options come from the schools table.</p>
+
+  <h2>School Ratio Map</h2>
+  <p class="note">School locations and student-to-counselor ratios from MindScope data. Marker color reflects staffing tier.</p>
+  <div id="ratios-error" class="error"></div>
+  <div id="school-ratio-map" class="empty">Loading school map…</div>
+  <div class="map-legend">
+    <span><span class="legend-dot" style="background:#842029"></span>Critical (&gt;400:1)</span>
+    <span><span class="legend-dot" style="background:#984c0c"></span>High (&gt;250:1)</span>
+    <span><span class="legend-dot" style="background:#856404"></span>Moderate (&gt;150:1)</span>
+    <span><span class="legend-dot" style="background:#0f5132"></span>Low (≤150:1)</span>
+    <span><span class="legend-dot" style="background:#6c757d"></span>No data</span>
+  </div>
+  <table id="ratios-table">
+    <thead>
+      <tr>
+        <th data-key="name">School Name</th>
+        <th data-key="district">District</th>
+        <th data-key="counselor_count">Counselors</th>
+        <th data-key="student_count">Students</th>
+        <th data-key="student_to_counselor_ratio">Ratio</th>
+        <th data-key="care_plans_submitted">Care Plans Submitted</th>
+        <th data-key="ratio_tier">Ratio Tier</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Submission Trend</h2>
+  <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+
+  <h2>Caseload vs. Submissions</h2>
+  <div class="chart-box"><canvas id="scatter-chart"></canvas></div>
+
+  <script>
+    const tierClass = {
+      critical: 'tier-critical',
+      high: 'tier-high',
+      moderate: 'tier-moderate',
+      low: 'tier-low',
+      no_data: 'tier-no_data'
+    };
+
+    const tierColors = {
+      high: '#198754',
+      medium: '#0d6efd',
+      low: '#fd7e14',
+      none: '#dc3545'
+    };
+
+    const palette = ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6'];
+
+    const tierMarkerColors = {
+      critical: '#842029',
+      high: '#984c0c',
+      moderate: '#856404',
+      low: '#0f5132',
+      no_data: '#6c757d'
+    };
+
+    const hasMapsKey = {{ 'true' if google_maps_api_key else 'false' }};
+    let schoolMap = null;
+    let schoolMarkers = [];
+    let activeInfoWindow = null;
+    let trendChart = null;
+    let scatterChart = null;
+    let ratioRows = [];
+    let ratioSortKey = 'student_to_counselor_ratio';
+    let ratioSortAsc = false;
+
+    function renderRatioTable() {
+      const rows = [...ratioRows].sort((a, b) => {
+        const av = a[ratioSortKey] ?? -Infinity;
+        const bv = b[ratioSortKey] ?? -Infinity;
+        return ratioSortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+      });
+      document.querySelector('#ratios-table tbody').innerHTML = rows.map(row => `
+        <tr>
+          <td>${row.name}</td>
+          <td>${row.district}</td>
+          <td>${row.counselor_count}</td>
+          <td>${row.student_count}</td>
+          <td>${fmtNum(row.student_to_counselor_ratio)}</td>
+          <td>${row.care_plans_submitted}</td>
+          <td class="${tierClass[row.ratio_tier] || ''}">${row.ratio_tier}</td>
+        </tr>
+      `).join('');
+    }
+
+    function initRatioSort() {
+      document.querySelectorAll('#ratios-table th').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.key;
+          if (ratioSortKey === key) ratioSortAsc = !ratioSortAsc;
+          else { ratioSortKey = key; ratioSortAsc = false; }
+          renderRatioTable();
+        });
+      });
+    }
+
+    function selectedZip() {
+      return document.getElementById('zip-filter').value;
+    }
+
+    function zipQuery() {
+      const zip = selectedZip();
+      return zip ? `?zip_code=${encodeURIComponent(zip)}` : '';
+    }
+
+    async function loadZipOptions() {
+      const res = await fetch('/api/school-zips');
+      const zips = await res.json();
+      const select = document.getElementById('zip-filter');
+      select.innerHTML = zips.map(z => {
+        const label = `${z.zip_code} (${z.school_count} school${z.school_count === 1 ? '' : 's'})`;
+        return `<option value="${z.zip_code}">${label}</option>`;
+      }).join('');
+      if (!zips.length) {
+        select.innerHTML = '<option value="">No school zips found</option>';
+      }
+    }
+
+    function fmtNum(value) {
+      if (value === null || value === undefined) return '—';
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    async function waitForGoogleMaps() {
+      if (!hasMapsKey) return false;
+      const start = Date.now();
+      while (!window.google?.maps) {
+        if (Date.now() - start > 10000) return false;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return true;
+    }
+
+    function destroySchoolMap(message) {
+      schoolMarkers.forEach(marker => marker.setMap(null));
+      schoolMarkers = [];
+      if (activeInfoWindow) {
+        activeInfoWindow.close();
+        activeInfoWindow = null;
+      }
+      schoolMap = null;
+
+      const oldEl = document.getElementById('school-ratio-map');
+      if (!oldEl?.parentNode) return null;
+
+      const mapEl = document.createElement('div');
+      mapEl.id = 'school-ratio-map';
+      if (message) {
+        mapEl.className = 'empty';
+        mapEl.textContent = message;
+      }
+      oldEl.parentNode.replaceChild(mapEl, oldEl);
+      return mapEl;
+    }
+
+    async function renderSchoolMap(rows, center) {
+      const schools = rows.filter(s => s.lat != null && s.lng != null);
+
+      if (!hasMapsKey) {
+        destroySchoolMap('Add GOOGLE_PLACES_API_KEY to .env to enable the map view.');
+        return;
+      }
+
+      const mapsReady = await waitForGoogleMaps();
+      if (!mapsReady) {
+        destroySchoolMap('Google Maps failed to load. Check your API key and enabled APIs.');
+        return;
+      }
+
+      if (!schools.length) {
+        destroySchoolMap('No mappable schools found. School addresses could not be geocoded.');
+        return;
+      }
+
+      const mapEl = destroySchoolMap();
+      const mapCenter = center || {
+        lat: schools.reduce((sum, s) => sum + s.lat, 0) / schools.length,
+        lng: schools.reduce((sum, s) => sum + s.lng, 0) / schools.length
+      };
+
+      schoolMap = new google.maps.Map(mapEl, {
+        center: mapCenter,
+        zoom: 12,
+        mapTypeControl: true,
+        streetViewControl: false,
+        fullscreenControl: true
+      });
+
+      const bounds = new google.maps.LatLngBounds();
+      schools.forEach(school => {
+        const position = { lat: school.lat, lng: school.lng };
+        bounds.extend(position);
+
+        const marker = new google.maps.Marker({
+          position,
+          map: schoolMap,
+          title: school.name,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 10,
+            fillColor: tierMarkerColors[school.ratio_tier] || '#3366cc',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+          }
+        });
+
+        const infoWindow = new google.maps.InfoWindow({
+          content: `
+            <div style="max-width:240px">
+              <strong>${school.name}</strong><br>
+              ${school.location || ''}<br>
+              <em>${school.district}</em><br><br>
+              Counselors: ${school.counselor_count}<br>
+              Students: ${school.student_count.toLocaleString()}<br>
+              Ratio: ${fmtNum(school.student_to_counselor_ratio)}:1<br>
+              Care plans: ${school.care_plans_submitted}<br>
+              Tier: ${school.ratio_tier}
+            </div>
+          `
+        });
+
+        marker.addListener('mouseover', () => {
+          if (activeInfoWindow) activeInfoWindow.close();
+          activeInfoWindow = infoWindow;
+          infoWindow.open({ map: schoolMap, anchor: marker });
+        });
+
+        marker.addListener('mouseout', () => infoWindow.close());
+        marker.addListener('click', () => {
+          if (activeInfoWindow) activeInfoWindow.close();
+          activeInfoWindow = infoWindow;
+          infoWindow.open({ map: schoolMap, anchor: marker });
+          schoolMap.panTo(position);
+        });
+
+        schoolMarkers.push(marker);
+      });
+
+      schoolMap.fitBounds(bounds);
+      if (schools.length === 1) schoolMap.setZoom(14);
+    }
+
+    async function loadRatios() {
+      const res = await fetch(`/api/counselor-density/school-ratios${zipQuery()}`);
+      const payload = await res.json();
+      const rows = payload.schools || payload;
+      const tbody = document.querySelector('#ratios-table tbody');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7">No schools found for this zip code.</td></tr>';
+        destroySchoolMap(`No schools found for zip ${selectedZip()}.`);
+        return;
+      }
+      ratioRows = rows;
+      renderRatioTable();
+      await renderSchoolMap(rows, payload.center);
+    }
+
+    async function loadTrendChart() {
+      if (trendChart) trendChart.destroy();
+      const res = await fetch(`/api/counselor-density/submission-trend${zipQuery()}`);
+      const rows = await res.json();
+      const byCounselor = {};
+      rows.forEach(row => {
+        const id = row.counselorid;
+        if (!byCounselor[id]) {
+          byCounselor[id] = {
+            label: `${row.fname} ${row.lname}`,
+            meta: {}
+          };
+        }
+        byCounselor[id].meta[row.year_month] = row;
+      });
+
+      const months = [...new Set(rows.map(r => r.year_month))].sort();
+      const datasets = Object.values(byCounselor).map((counselor, idx) => ({
+        label: counselor.label,
+        data: months.map(m => counselor.meta[m]?.submissions_that_month ?? null),
+        borderColor: palette[idx % palette.length],
+        backgroundColor: palette[idx % palette.length],
+        tension: 0.2,
+        spanGaps: true,
+        meta: counselor.meta,
+        months
+      }));
+
+      trendChart = new Chart(document.getElementById('trend-chart'), {
+        type: 'line',
+        data: {
+          labels: months,
+          datasets: datasets.map(ds => ({
+            label: ds.label,
+            data: ds.data,
+            borderColor: ds.borderColor,
+            backgroundColor: ds.backgroundColor,
+            tension: ds.tension,
+            spanGaps: ds.spanGaps
+          }))
+        },
+        options: {
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const ds = datasets[ctx.datasetIndex];
+                  const month = ds.months[ctx.dataIndex];
+                  const row = ds.meta[month];
+                  if (!row) return `${ds.label}: no data`;
+                  let lines = [
+                    `${ds.label}`,
+                    `Month: ${month}`,
+                    `Submissions: ${row.submissions_that_month}`
+                  ];
+                  if (row.most_recent_checkin_response) {
+                    lines.push(`Context: ${row.most_recent_checkin_response}`);
+                  }
+                  return lines;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Month' } },
+            y: { title: { display: true, text: 'Submissions' }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    async function loadScatterChart() {
+      if (scatterChart) scatterChart.destroy();
+      const res = await fetch(`/api/counselor-density/caseload-scatter${zipQuery()}`);
+      const rows = await res.json();
+
+      scatterChart = new Chart(document.getElementById('scatter-chart'), {
+        type: 'scatter',
+        data: {
+          datasets: [{
+            label: 'Counselors',
+            data: rows.map(r => ({
+              x: r.student_count,
+              y: r.total_submissions,
+              counselor: r,
+            })),
+            backgroundColor: rows.map(r => tierColors[r.submission_frequency_tier] || '#666'),
+            pointRadius: 7
+          }]
+        },
+        options: {
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const r = ctx.raw.counselor;
+                  const lines = [
+                    `${r.fname} ${r.lname}`,
+                    `School: ${r.school_name}`,
+                    `Students: ${r.student_count}`,
+                    `Total submissions: ${r.total_submissions}`,
+                    `Tier: ${r.submission_frequency_tier}`
+                  ];
+                  if (r.low_usage_explanation) {
+                    lines.push(`Why low usage: ${r.low_usage_explanation}`);
+                  }
+                  return lines;
+                }
+              }
+            },
+            legend: { display: false }
+          },
+          scales: {
+            x: { title: { display: true, text: 'Students on Caseload' }, beginAtZero: true },
+            y: { title: { display: true, text: 'Care Plans Submitted' }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    async function reloadDashboard() {
+      document.getElementById('ratios-error').textContent = '';
+      await Promise.all([loadRatios(), loadTrendChart(), loadScatterChart()]);
+    }
+
+    loadZipOptions()
+      .then(() => {
+        initRatioSort();
+        document.getElementById('zip-filter').addEventListener('change', () => {
+          reloadDashboard().catch(err => {
+            document.getElementById('ratios-error').textContent = `Failed to load dashboard data: ${err}`;
+            console.error(err);
+          });
+        });
+        return reloadDashboard();
+      })
+      .catch(err => {
+        document.getElementById('ratios-error').textContent = `Failed to load dashboard data: ${err}`;
+        console.error(err);
+      });
+  </script>
+</body>
+</html>

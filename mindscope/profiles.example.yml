@@ -1,0 +1,14 @@
+# Copy to ~/.dbt/profiles.yml (or merge this profile into your existing file).
+# Do not commit real passwords to git.
+
+mindscope:
+  target: dev
+  outputs:
+    dev:
+      type: mysql
+      server: localhost
+      port: 3306
+      schema: mindscope
+      username: root
+      password: your_mysql_password
+      ssl_disabled: true

@@ -1,0 +1,507 @@
+version: 2
+
+sources:
+  - name: mindscope
+    description: >
+      Raw MindScope MySQL database. Contains operational tables written by the
+      Flask app and analytical tables written by pipeline.py.
+    database: mindscope
+    schema: mindscope
+    tables:
+
+      # ---------------------------------------------------------
+      # Operational tables (written by the app)
+      # ---------------------------------------------------------
+
+      - name: schools
+        description: "Schools in the MindScope network, used to scope counselors and students."
+        columns:
+          - name: schoolid
+            description: "Primary key for the school."
+          - name: name
+            description: "Display name of the school."
+          - name: location
+            description: "Street address or campus location string."
+          - name: district
+            description: "School district the campus belongs to."
+          - name: student_count
+            description: "Total enrolled student population at the school, used for counselor staffing ratio calculations."
+          - name: zip_code
+            description: "School campus zip code used for geographic filtering on dashboards."
+
+      - name: parents
+        description: "Parent/guardian accounts that log into the app to track care plans."
+        columns:
+          - name: parentid
+            description: "Primary key for the parent account."
+          - name: fname
+            description: "Parent first name."
+          - name: lname
+            description: "Parent last name."
+          - name: email
+            description: "Login email address for the parent portal."
+          - name: password
+            description: "Hashed password credential (never expose in models or logs)."
+
+      - name: counselors
+        description: "Guidance counselors who submit intake questionnaires and manage student roadmaps."
+        columns:
+          - name: counselorid
+            description: "Primary key for the counselor."
+          - name: fname
+            description: "Counselor first name."
+          - name: lname
+            description: "Counselor last name."
+          - name: email
+            description: "School email address for the counselor."
+          - name: schoolid
+            description: "Foreign key to schools.schoolid — the counselor's assigned school."
+
+      - name: students
+        description: "Students receiving behavioral health care plans through MindScope."
+        columns:
+          - name: studentid
+            description: "Primary key for the student."
+          - name: fname
+            description: "Student first name."
+          - name: lname
+            description: "Student last name."
+          - name: schoolid
+            description: "Foreign key to schools.schoolid."
+          - name: parentid
+            description: "Foreign key to parents.parentid — the linked guardian account."
+          - name: zipcode
+            description: "Home zip code used for referral facility search radius."
+
+      - name: roadmap
+        description: "One care plan roadmap per student, staging parent tasks across up to six stages."
+        columns:
+          - name: roadmapid
+            description: "Primary key for the roadmap."
+          - name: studentid
+            description: "Foreign key to students.studentid; unique — one roadmap per student."
+          - name: counselorid
+            description: "Foreign key to counselors.counselorid — counselor who owns the plan."
+          - name: status
+            description: "Lifecycle status: active, paused, or completed."
+          - name: created_at
+            description: "Timestamp when the care plan roadmap was generated."
+
+      - name: referrals
+        description: "External therapy referrals surfaced to parents from the AI pipeline search results."
+        columns:
+          - name: referralid
+            description: "Primary key for the referral."
+          - name: roadmapid
+            description: "Foreign key to roadmap.roadmapid."
+          - name: therapy_type
+            description: "Category slug for the referral (e.g. behavioral_therapy, speech_therapy)."
+          - name: name
+            description: "Facility or provider name shown to the parent."
+          - name: location
+            description: "Facility address or location string."
+          - name: status
+            description: "Referral progress: pending, scheduled, checked_in, completed, or missed."
+          - name: met_at
+            description: "Timestamp when the referral milestone was completed or checked in; NULL if not yet met."
+
+      - name: parent_tasks
+        description: "Staged parent-facing tasks within a roadmap, unlocked progressively by stage."
+        columns:
+          - name: parent_taskid
+            description: "Primary key for the parent task."
+          - name: roadmapid
+            description: "Foreign key to roadmap.roadmapid."
+          - name: description
+            description: "Human-readable task instructions shown to the parent."
+          - name: stage
+            description: "Roadmap stage gate: stage_1 through stage_6."
+          - name: status
+            description: "Task progress: pending, in_progress, or completed."
+          - name: visible
+            description: "Whether the parent can currently see this task in the app."
+          - name: met_at
+            description: "Timestamp when the parent marked the task completed; NULL otherwise."
+
+      - name: behavior_checks
+        description: "Counselor-defined behavior criteria linked to each parent task for progress tracking."
+        columns:
+          - name: behavior_checkid
+            description: "Primary key for the behavior check."
+          - name: parent_taskid
+            description: "Foreign key to parent_tasks.parent_taskid."
+          - name: description
+            description: "Observable behavior the counselor is tracking."
+          - name: stage
+            description: "Integer stage number (1–6) aligned with the parent task stage."
+          - name: status
+            description: "Check outcome: not_met, in_progress, or met."
+          - name: visible
+            description: "Whether this check is visible to the parent in the app."
+          - name: met_at
+            description: "Timestamp when the behavior was confirmed met; NULL otherwise."
+
+      - name: appointment
+        description: "Scheduled meetings between a parent and counselor about a student's care plan."
+        columns:
+          - name: appointmentid
+            description: "Primary key for the appointment."
+          - name: parentid
+            description: "Foreign key to parents.parentid."
+          - name: counselorid
+            description: "Foreign key to counselors.counselorid."
+          - name: createdBy
+            description: "Who initiated the booking: parent or counselor."
+          - name: status
+            description: "Appointment state: pending, confirmed, or cancelled."
+          - name: start
+            description: "Appointment start datetime."
+          - name: end
+            description: "Appointment end datetime."
+
+      - name: messages
+        description: "In-app message threads tied to appointments between parents and counselors."
+        columns:
+          - name: messageid
+            description: "Primary key for the message."
+          - name: appointmentid
+            description: "Foreign key to appointment.appointmentid."
+          - name: message_type
+            description: "Sender role: parent or counselor."
+          - name: parentid
+            description: "Foreign key to parents.parentid."
+          - name: counselorid
+            description: "Foreign key to counselors.counselorid."
+          - name: body
+            description: "Message text content."
+          - name: is_read
+            description: "Whether the recipient has read the message."
+          - name: created_at
+            description: "Timestamp when the message was sent."
+
+      # ---------------------------------------------------------
+      # Analytical tables (written by pipeline.py)
+      # ---------------------------------------------------------
+
+      - name: questionnaire_submissions
+        description: "Raw counselor intake JSON for each care plan generated; anchor row for all analytics."
+        columns:
+          - name: submission_id
+            description: "Primary key; one row per care plan submission."
+          - name: counselor_id
+            description: "Foreign key to counselors.counselorid."
+          - name: school_id
+            description: "Foreign key to schools.schoolid."
+          - name: zip_code
+            description: "Student home zip code used for facility search at submission time."
+          - name: submitted_at
+            description: "Timestamp when the counselor submitted the intake form."
+          - name: counselor_form_json
+            description: "JSON blob of the counselor intake questionnaire responses."
+          - name: parent_form_json
+            description: "JSON blob of the parent follow-up form; NULL if not yet submitted."
+          - name: pipeline_version
+            description: "AI pipeline version string that generated the care plan (e.g. 1.0.0)."
+
+      - name: recommendation_events
+        description: "Every therapy type recommended by the rule engine per care plan submission, including severity, gap status, and triggering conditions."
+        columns:
+          - name: recommendation_id
+            description: "Primary key for the recommendation event."
+          - name: submission_id
+            description: "Foreign key to questionnaire_submissions.submission_id."
+          - name: school_id
+            description: "Foreign key to schools.schoolid at time of recommendation."
+          - name: zip_code
+            description: "Zip code context used when scoring the recommendation."
+          - name: intervention
+            description: "Human-readable therapy intervention name (e.g. CBT, TF-CBT)."
+          - name: therapy_category
+            description: "Normalized category slug for the intervention type."
+          - name: severity
+            description: "Urgency tier assigned by the rule engine: critical, high, or moderate."
+          - name: gap_score
+            description: "Numeric gap score reflecting unmet need severity (~300 critical, ~200 high, ~100 moderate)."
+          - name: was_gap
+            description: "TRUE if the student was not already receiving this service; FALSE if already in place."
+          - name: triggered_by
+            description: "JSON array of behavioral condition slugs that caused this recommendation."
+          - name: recommended_at
+            description: "Timestamp when the rule engine emitted this recommendation."
+
+      - name: facility_search_events
+        description: "Every facility returned by the referral search pipeline per submission, including scoring tier and selection outcome."
+        columns:
+          - name: search_event_id
+            description: "Primary key for the facility search result row."
+          - name: submission_id
+            description: "Foreign key to questionnaire_submissions.submission_id."
+          - name: zip_code
+            description: "Zip code used as the search origin."
+          - name: therapy_type
+            description: "Therapy type queried in this search pass."
+          - name: facility_name
+            description: "Name of the facility or resource returned."
+          - name: facility_address
+            description: "Street address if a physical facility; NULL for directory or document results."
+          - name: source
+            description: "Search provider: google_places, tavily, or samhsa."
+          - name: relevance_score
+            description: "Relevance component score (0–100)."
+          - name: operational_score
+            description: "Operational readiness component score (0–20)."
+          - name: total_score
+            description: "Combined score (0–120); determines tier."
+          - name: tier
+            description: "Ranking bucket: recommended (≥65), possible (40–64), or excluded (<40)."
+          - name: result_type
+            description: "Result classification: facility, directory_search_page, informational_page, or pdf_or_document."
+          - name: was_selected
+            description: "TRUE if this facility was chosen for the parent-facing referrals table."
+          - name: searched_at
+            description: "Timestamp when the search pipeline evaluated this result."
+
+      - name: counselor_checkins
+        description: "Counselor responses to in-app pulse checks after submissions and low-usage prompts."
+        columns:
+          - name: checkin_id
+            description: "Primary key for the check-in response."
+          - name: counselor_id
+            description: "Foreign key to counselors.counselorid."
+          - name: school_id
+            description: "Foreign key to schools.schoolid."
+          - name: checkin_type
+            description: "Prompt type: post_submission (after care plan) or low_usage_prompt (30+ days inactive)."
+          - name: response
+            description: "Selected reason slug (e.g. new_student_concern, busy_other_responsibilities)."
+          - name: submitted_at
+            description: "Timestamp when the counselor submitted the check-in."
+
+      # ---------------------------------------------------------
+      # dbt mart tables (built by mindscope_dbt — counselor density page)
+      # ---------------------------------------------------------
+
+      - name: mart_school_counselor_ratios
+        description: >
+          Pre-computed school-level student-to-counselor ratios and care plan
+          volume. Powers the counselor density map/table view on counselor.html.
+        columns:
+          - name: schoolid
+            description: "Primary key; joins to schools.schoolid."
+          - name: student_to_counselor_ratio
+            description: "Students divided by counselors; NULL when no counselors."
+          - name: ratio_tier
+            description: "Derived urgency band: critical, high, moderate, low, or no_data."
+
+      - name: mart_counselor_submission_trend
+        description: >
+          Monthly care plan submission counts per counselor with rolling average
+          and check-in context. Powers the submission trend line chart on counselor.html.
+        columns:
+          - name: counselorid
+            description: "Primary key reference to counselors.counselorid."
+          - name: year_month
+            description: "Submission month formatted as YYYY-MM."
+          - name: most_recent_checkin_response
+            description: "Check-in explanation for low-usage months shown in chart tooltips."
+
+      - name: mart_counselor_caseload_vs_submissions
+        description: >
+          Per-counselor caseload size vs. lifetime submission volume with low-usage
+          explanations. Powers the caseload scatter plot on counselor.html.
+        columns:
+          - name: counselorid
+            description: "Primary key reference to counselors.counselorid."
+          - name: submission_frequency_tier
+            description: "Activity band: high, medium, low, or none."
+          - name: low_usage_explanation
+            description: "Most recent low_usage_prompt response when tier is low or none."
+
+      # ---------------------------------------------------------
+      # dbt mart tables (built by mindscope_dbt — service mapping page)
+      # ---------------------------------------------------------
+
+      - name: mart_therapy_demand_vs_supply
+        description: >
+          Zip-code and therapy-type demand vs. facility supply with gap severity
+          tiers. Powers the color-coded heat map table and gap severity distribution
+          chart on servicemap.html.
+        columns:
+          - name: zip_code
+            description: "Geographic zip code for the demand/supply comparison."
+          - name: therapy_type
+            description: "Therapy intervention name (matches recommendation_events.intervention)."
+          - name: times_recommended
+            description: "Count of gap recommendations (was_gap = TRUE) in this zip for this therapy type."
+          - name: supply_coverage_rate
+            description: "Ratio of recommended-tier facilities found to times recommended; capped at 1.0."
+          - name: gap_severity
+            description: "Derived tier: critical, high, moderate, covered, or no_demand."
+
+      - name: mart_therapy_type_demand_summary
+        description: >
+          Aggregate demand metrics per therapy type across all care plans. Powers
+          the stacked therapy type demand bar chart on servicemap.html.
+        columns:
+          - name: therapy_type
+            description: "Therapy intervention name."
+          - name: total_recommendations
+            description: "Total times this therapy type appeared in recommendation_events."
+          - name: gap_rate
+            description: "Percentage of recommendations where the student was not already receiving the service."
+          - name: zip_codes_affected
+            description: "Count of distinct zip codes where this therapy type was recommended."
+          - name: most_common_zip
+            description: "Zip code with the highest recommendation count for this therapy type."
+
+      # ---------------------------------------------------------
+      # dbt mart tables (built by mindscope_dbt — referral status page)
+      # ---------------------------------------------------------
+
+      - name: mart_engagement_funnel
+        description: >
+          Four-stage engagement funnel from questionnaire through confirmed appointment.
+          Powers the funnel bar chart on referralstatus.html.
+        columns:
+          - name: stage_order
+            description: "Integer 1-4 for funnel stage ordering."
+          - name: drop_off_rate
+            description: "Percentage drop from the prior funnel stage; NULL for stage 1."
+
+      - name: mart_referral_followthrough_timing
+        description: >
+          Referral-level days from care plan creation to first action, bucketed for
+          histogram rendering. Powers the timing distribution chart on referralstatus.html.
+        columns:
+          - name: days_bucket
+            description: "Histogram bucket label (0-7 days through not_yet_actioned)."
+          - name: bucket_order
+            description: "Integer 1-6 for correct bucket ordering on the chart."
+
+      - name: mart_referral_status_by_therapy
+        description: >
+          Referral status counts and rates per therapy type with completion metrics.
+          Powers the stacked status-by-therapy chart on referralstatus.html.
+        columns:
+          - name: completion_rate
+            description: "Percentage of referrals for this therapy type that reached completed."
+          - name: avg_days_to_complete
+            description: "Average days to first action for completed referrals."
+
+      - name: mart_referral_status_over_time
+        description: >
+          Referral status distribution at 30/60/90 day snapshots after care plan creation.
+          Powers the over-time stacked bar chart on referralstatus.html.
+        columns:
+          - name: snapshot_label
+            description: "30_days, 60_days, or 90_days post care plan creation."
+          - name: status_percentage
+            description: "Share of referrals in this status at the snapshot point."
+
+      # ---------------------------------------------------------
+      # dbt mart tables (built by mindscope_dbt — roadmap progression page)
+      # ---------------------------------------------------------
+
+      - name: mart_stage_completion_distribution
+        description: >
+          Student counts per roadmap stage including stalled students and cumulative reach.
+          Powers the stage completion distribution chart on roadmapprog.html.
+        columns:
+          - name: students_stalled_here
+            description: "Students at this highest stage who have not fully completed it."
+          - name: completion_rate_this_stage
+            description: "Percentage of students at this stage who completed all tasks in it."
+
+      - name: mart_behavioral_marker_difficulty
+        description: >
+          Behavioral marker met rates and difficulty tiers grouped by exact description.
+          Powers the behavioral marker difficulty table on roadmapprog.html.
+        columns:
+          - name: difficulty_tier
+            description: "very_hard, hard, moderate, or achievable based on met_rate."
+          - name: avg_days_to_met
+            description: "Average days from roadmap creation to marker met; NULL if never met."
+
+      - name: mart_avg_time_per_stage
+        description: >
+          Average, median, and range of days spent completing each roadmap stage.
+          Powers the average time per stage chart on roadmapprog.html.
+        columns:
+          - name: stages_significantly_longer
+            description: "TRUE when avg days exceeds 1.5x the overall stage average."
+
+      - name: mart_parent_task_completion_by_stage
+        description: >
+          Parent task completion rates by stage with disengagement detection signals.
+          Powers the parent task completion stacked chart on roadmapprog.html.
+        columns:
+          - name: disengagement_signal
+            description: "TRUE when visible-task completion drops more than 20 points from prior stage."
+          - name: completion_rate_of_visible
+            description: "Completion rate among tasks visible to parents only."
+
+      # ---------------------------------------------------------
+      # dbt seed tables (manually curated placeholder data)
+      # ---------------------------------------------------------
+
+      - name: seed_district_socioeconomic
+        description: >
+          Manually curated district socioeconomic indicators used as a placeholder
+          until real Census or NCES data is sourced. Replace with authoritative
+          district-level data from https://nces.ed.gov/ccd/ for production.
+        columns:
+          - name: district
+            description: "School district name; joins to schools.district."
+          - name: median_household_income
+            description: "District median household income in USD."
+          - name: free_reduced_lunch_rate
+            description: "Share of students eligible for free or reduced-price lunch (0-1)."
+          - name: title_1_eligible
+            description: "Whether the district qualifies for Title I funding."
+          - name: socioeconomic_tier
+            description: "Derived label: low, moderate, or high."
+
+      # ---------------------------------------------------------
+      # dbt mart tables (built by mindscope_dbt — equity page)
+      # ---------------------------------------------------------
+
+      - name: mart_care_plan_rate_by_socioeconomic
+        description: >
+          Care plan adoption rates by district with socioeconomic context from the
+          seed table. Powers the adoption scatter chart on equity.html.
+        columns:
+          - name: care_plans_per_100_students
+            description: "Care plans generated per 100 enrolled students in the district."
+          - name: adoption_vs_need_signal
+            description: "Cross of socioeconomic tier and adoption rate for equity monitoring."
+
+      - name: mart_referral_followthrough_by_zip
+        description: >
+          Referral action and completion rates grouped by student home zip code.
+          Powers the follow-through bar chart on equity.html.
+        columns:
+          - name: followthrough_rate
+            description: "Percentage of referrals where status is not pending."
+          - name: followthrough_tier
+            description: "strong, moderate, weak, critical, or no_data."
+
+      - name: mart_service_desert_index
+        description: >
+          Composite underserved-community index combining therapy demand, facility
+          supply gaps, and referral follow-through by zip code.
+        columns:
+          - name: service_desert_index
+            description: "Weighted score from 0 (served) to 1 (severe desert)."
+          - name: desert_tier
+            description: "severe_desert, significant_desert, moderate_gap, adequately_served, or insufficient_data."
+
+      - name: mart_appointment_scheduling_rate
+        description: >
+          Scheduling conversion from referral action to confirmed appointment,
+          with overall and per-zip breakdowns.
+        columns:
+          - name: grouping_type
+            description: "overall for district-wide summary or by_zip for zip breakdown."
+          - name: scheduling_rate
+            description: "Percentage of actioned care plans with a confirmed appointment."
+

@@ -1,0 +1,29 @@
+name: mindscope_dbt
+version: '1.0.0'
+config-version: 2
+
+profile: mindscope
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  mindscope_dbt:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+      counselor_density:
+        +materialized: table
+      service_mapping:
+        +materialized: table
+      care_plan_impact:
+        +materialized: table
+      roadmap_progression:
+        +materialized: table
+      equity:
+        +materialized: table

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MindScope — Referral Status</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 6px; }
+    .note { color: #555; font-size: 14px; margin-bottom: 12px; }
+    .filter-row { margin: 16px 0; }
+    label { font-weight: bold; margin-right: 8px; }
+    select { min-width: 280px; padding: 6px 8px; }
+    .summary { margin: 12px 0; font-size: 15px; }
+    .summary.positive { color: #0f5132; }
+    .summary.negative { color: #842029; }
+    .chart-box { max-width: 960px; margin-top: 16px; }
+    .funnel-box { max-width: 720px; margin-left: auto; margin-right: auto; }
+    .funnel-chart {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0 16px;
+    }
+    .funnel-row {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .funnel-stage {
+      height: 52px;
+      min-width: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 22px;
+      font-weight: bold;
+      border-radius: 3px;
+      transition: width 0.25s ease;
+    }
+    .funnel-caption {
+      font-size: 14px;
+      color: #333;
+      text-align: center;
+    }
+    .funnel-drop {
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  {% include 'partials/nav.html' %}
+  <h1>Referral Status Dashboard</h1>
+  <p class="note">Are families actually acting on care plans? Track referral engagement, follow-through timing, and drop-off points.</p>
+
+  <div class="filter-row">
+    <label for="therapy-filter">Therapy type</label>
+    <select id="therapy-filter">
+      <option value="">All therapy types</option>
+    </select>
+  </div>
+  <p class="note">Filter applies to the status-by-therapy and 30/60/90 day charts below.</p>
+
+  <h2>Engagement Funnel</h2>
+  <div class="chart-box funnel-box"><div id="funnel-chart" class="funnel-chart"></div></div>
+  <div id="funnel-summary" class="summary"></div>
+  <div id="funnel-error" class="error"></div>
+
+  <h2>Referral Follow-Through Timing</h2>
+  <div class="chart-box"><canvas id="timing-chart"></canvas></div>
+  <div id="timing-summary" class="summary"></div>
+  <div id="timing-error" class="error"></div>
+
+  <h2>Referral Status by Therapy Type</h2>
+  <div class="chart-box"><canvas id="therapy-status-chart"></canvas></div>
+  <div id="therapy-error" class="error"></div>
+
+  <h2>Referral Status at 30 / 60 / 90 Days</h2>
+  <div class="chart-box"><canvas id="overtime-chart"></canvas></div>
+  <p class="note">Status reflects current state as of today, not point-in-time historical status. A status history table will enable true longitudinal tracking in a future release.</p>
+  <div id="overtime-error" class="error"></div>
+
+  <script>
+    const statusOrder = ['pending', 'scheduled', 'checked_in', 'completed', 'missed'];
+    const statusColors = {
+      pending: '#adb5bd',
+      scheduled: '#0d6efd',
+      checked_in: '#75b798',
+      completed: '#198754',
+      missed: '#dc3545'
+    };
+    const statusLabels = {
+      pending: 'Pending',
+      scheduled: 'Scheduled',
+      checked_in: 'Checked In',
+      completed: 'Completed',
+      missed: 'Missed'
+    };
+    const bucketColors = {
+      '0-7 days': '#198754',
+      '8-14 days': '#75b798',
+      '15-30 days': '#ffc107',
+      '31-60 days': '#fd7e14',
+      '60+ days': '#dc3545',
+      'not_yet_actioned': '#adb5bd'
+    };
+    const funnelColors = ['#1a365d', '#2c5282', '#4299e1', '#90cdf4'];
+
+    let timingChart = null;
+    let therapyStatusChart = null;
+    let overtimeChart = null;
+    let funnelRows = [];
+    let timingRows = [];
+
+    function fmtNum(value, digits = 0) {
+      if (value === null || value === undefined) return '—';
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
+    }
+
+    function fmtPct(value) {
+      if (value === null || value === undefined) return '—';
+      return `${fmtNum(value, 1)}%`;
+    }
+
+    function renderFunnel(rows) {
+      funnelRows = rows;
+      const container = document.getElementById('funnel-chart');
+      const maxCount = Math.max(...rows.map(r => r.stage_count), 1);
+
+      container.innerHTML = rows.map((row, index) => {
+        const widthPct = Math.max(22, (row.stage_count / maxCount) * 100);
+        const dropHtml = row.drop_off_rate != null
+          ? `<div class="funnel-drop">${fmtPct(row.drop_off_rate)} drop-off from prior stage</div>`
+          : '';
+        return `
+          <div class="funnel-row">
+            <div class="funnel-stage" style="width:${widthPct}%;background:${funnelColors[index]}">
+              ${fmtNum(row.stage_count)}
+            </div>
+            <div class="funnel-caption">${row.stage_name}</div>
+            ${dropHtml}
+          </div>
+        `;
+      }).join('');
+
+      const stage1 = rows.find(r => r.stage_order === 1)?.stage_count || 0;
+      const stage4 = rows.find(r => r.stage_order === 4)?.stage_count || 0;
+      const pct = stage1 ? (stage4 / stage1) * 100 : 0;
+      document.getElementById('funnel-summary').textContent =
+        `${fmtPct(pct)} of questionnaires result in a confirmed appointment`;
+    }
+
+    function renderTiming(rows) {
+      timingRows = rows;
+      const labels = rows.map(r => r.days_bucket);
+      const ctx = document.getElementById('timing-chart');
+      if (timingChart) timingChart.destroy();
+      timingChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Referrals',
+            data: rows.map(r => r.referral_count),
+            backgroundColor: labels.map(l => bucketColors[l] || '#666')
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'Days from Care Plan to First Referral Action' },
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label(ctx) {
+                  return `${ctx.label}: ${ctx.parsed.y} referral${ctx.parsed.y === 1 ? '' : 's'}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, title: { display: true, text: 'Count of referrals' } }
+          }
+        }
+      });
+
+      const summaryEl = document.getElementById('timing-summary');
+      const actioned = rows.filter(r => r.days_bucket !== 'not_yet_actioned');
+      const totalActioned = actioned.reduce((s, r) => s + r.referral_count, 0);
+      const early = actioned
+        .filter(r => r.days_bucket === '0-7 days' || r.days_bucket === '8-14 days')
+        .reduce((s, r) => s + r.referral_count, 0);
+      const lateBucket = rows.find(r => r.days_bucket === '60+ days');
+      const largest = [...rows].sort((a, b) => b.referral_count - a.referral_count)[0];
+
+      if (totalActioned && early / totalActioned > 0.5) {
+        summaryEl.textContent = 'Most families act within 2 weeks of receiving their care plan';
+        summaryEl.className = 'summary positive';
+      } else if (largest?.days_bucket === '60+ days') {
+        summaryEl.textContent = 'Most families are taking over 2 months to act — friction point identified';
+        summaryEl.className = 'summary negative';
+      } else {
+        summaryEl.textContent = '';
+        summaryEl.className = 'summary';
+      }
+    }
+
+    function buildStackedTherapyData(rows) {
+      const types = [...new Set(rows.map(r => r.therapy_type))];
+      return {
+        labels: types,
+        datasets: statusOrder.map(status => ({
+          label: statusLabels[status],
+          data: types.map(type => {
+            const match = rows.find(r => r.therapy_type === type && r.status === status);
+            return match ? match.status_rate : 0;
+          }),
+          backgroundColor: statusColors[status],
+          _meta: types.map(type => rows.filter(r => r.therapy_type === type && r.status === status)[0] || {})
+        }))
+      };
+    }
+
+    function renderTherapyStatus(rows) {
+      const chartData = buildStackedTherapyData(rows);
+      const ctx = document.getElementById('therapy-status-chart');
+      if (therapyStatusChart) therapyStatusChart.destroy();
+      therapyStatusChart = new Chart(ctx, {
+        type: 'bar',
+        data: chartData,
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'Referral Status Distribution by Therapy Type' },
+            tooltip: {
+              callbacks: {
+                afterBody(items) {
+                  const ds = chartData.datasets[items[0].datasetIndex];
+                  const meta = ds._meta[items[0].dataIndex];
+                  if (!meta || !meta.therapy_type) return [];
+                  const typeRow = rows.find(r => r.therapy_type === meta.therapy_type);
+                  return [
+                    `Count: ${fmtNum(meta.status_count)}`,
+                    `Completion rate: ${fmtPct(typeRow?.completion_rate)}`,
+                    `Avg days to complete: ${fmtNum(typeRow?.avg_days_to_complete, 1)}`
+                  ];
+                }
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true, max: 100, title: { display: true, text: 'Percentage' } },
+            y: { stacked: true }
+          }
+        }
+      });
+    }
+
+    function aggregateOverTime(rows) {
+      const snapshots = [...new Set(rows.map(r => r.snapshot_label))].sort();
+      return snapshots.map(label => {
+        const snapRows = rows.filter(r => r.snapshot_label === label);
+        const total = snapRows.reduce((s, r) => s + r.referral_count, 0);
+        return statusOrder.map(status => {
+          const match = snapRows.filter(r => r.status === status);
+          const count = match.reduce((s, r) => s + r.referral_count, 0);
+          return {
+            snapshot_label: label,
+            status,
+            referral_count: count,
+            status_percentage: total ? (count / total) * 100 : 0
+          };
+        });
+      });
+    }
+
+    function renderOverTime(rows) {
+      const grouped = aggregateOverTime(rows);
+      const labels = grouped.map(g => g[0].snapshot_label.replace('_', ' '));
+      const ctx = document.getElementById('overtime-chart');
+      if (overtimeChart) overtimeChart.destroy();
+      overtimeChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: statusOrder.map(status => ({
+            label: statusLabels[status],
+            data: grouped.map(g => {
+              const match = g.find(r => r.status === status);
+              return match ? match.status_percentage : 0;
+            }),
+            backgroundColor: statusColors[status],
+            _counts: grouped.map(g => g.find(r => r.status === status)?.referral_count || 0)
+          }))
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            title: { display: true, text: 'How Referral Statuses Evolve at 30, 60, and 90 Days Post Care Plan' },
+            tooltip: {
+              callbacks: {
+                afterLabel(item) {
+                  const count = overtimeChart.data.datasets[item.datasetIndex]._counts[item.dataIndex];
+                  return `Count: ${count}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { stacked: true },
+            y: { stacked: true, max: 100, title: { display: true, text: 'Percentage' } }
+          }
+        }
+      });
+    }
+
+    async function loadFunnel() {
+      const res = await fetch('/api/referral-status/funnel');
+      if (!res.ok) throw new Error(`Funnel failed (${res.status})`);
+      renderFunnel(await res.json());
+    }
+
+    async function loadTiming() {
+      const res = await fetch('/api/referral-status/timing-distribution');
+      if (!res.ok) throw new Error(`Timing failed (${res.status})`);
+      renderTiming(await res.json());
+    }
+
+    async function loadTherapyStatus(therapyType) {
+      const url = therapyType
+        ? `/api/referral-status/by-therapy-type?therapy_type=${encodeURIComponent(therapyType)}`
+        : '/api/referral-status/by-therapy-type';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`By-therapy-type failed (${res.status})`);
+      renderTherapyStatus(await res.json());
+    }
+
+    async function loadOverTime(therapyType) {
+      const url = therapyType
+        ? `/api/referral-status/over-time?therapy_type=${encodeURIComponent(therapyType)}`
+        : '/api/referral-status/over-time';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Over-time failed (${res.status})`);
+      renderOverTime(await res.json());
+    }
+
+    async function loadTherapyTypes() {
+      const res = await fetch('/api/referral-status/therapy-types');
+      const types = await res.json();
+      const select = document.getElementById('therapy-filter');
+      types.forEach(type => {
+        const opt = document.createElement('option');
+        opt.value = type;
+        opt.textContent = type.replace(/_/g, ' ');
+        select.appendChild(opt);
+      });
+    }
+
+    async function refreshFilteredCharts() {
+      const therapyType = document.getElementById('therapy-filter').value;
+      try {
+        await Promise.all([
+          loadTherapyStatus(therapyType || null),
+          loadOverTime(therapyType || null)
+        ]);
+      } catch (err) {
+        document.getElementById('therapy-error').textContent = err.message;
+      }
+    }
+
+    document.getElementById('therapy-filter').addEventListener('change', refreshFilteredCharts);
+
+    (async () => {
+      try {
+        await loadTherapyTypes();
+        await Promise.all([loadFunnel(), loadTiming(), refreshFilteredCharts()]);
+      } catch (err) {
+        document.getElementById('funnel-error').textContent = err.message;
+      }
+    })();
+  </script>
+</body>
+</html>

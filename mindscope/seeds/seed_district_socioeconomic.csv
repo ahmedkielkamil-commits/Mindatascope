@@ -1,0 +1,7 @@
+district,median_household_income,free_reduced_lunch_rate,title_1_eligible,socioeconomic_tier
+Atlanta Public Schools,48500,0.68,true,low
+KIPP Metro Atlanta,52000,0.61,true,low
+Northside Unified,89000,0.22,false,high
+Eastview District,64000,0.44,false,moderate
+Lakewood County Schools,41000,0.73,true,low
+Ridgeline Academy District,112000,0.09,false,high
